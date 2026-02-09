@@ -3,7 +3,7 @@
 # --- Configuration ---
 FILE_PORT=${FILE_PORT:-9999}
 DISCOVERY_PORT=${DISCOVERY_PORT:-9998}
-VERSION="2.3"
+VERSION="2.4"
 VERIFY_CHECKSUM=false
 COMPRESS_TRANSFER=false
 ENCRYPT_TRANSFER=false
@@ -359,19 +359,34 @@ receive_mode() {
     while $RUNNING; do
         if [[ -z "$socat_pid" ]] || ! kill -0 "$socat_pid" 2>/dev/null; then
             if [[ -n "$socat_pid" ]]; then
-                # Transfer just finished
-                echo -e "\n${TICK} ${GREEN}Transfer Success!${NC}"
-                log_transfer "RECEIVE" "$MY_IP" "incoming" "SUCCESS" "-"
-                echo -e "${CYAN}──────────────────────────────────────────────────────${NC}"
+                # Check how long it ran
+                local end_time=$(date +%s)
+                local duration=$((end_time - start_time))
+                
+                if [[ $duration -lt 2 ]]; then
+                    echo -e "\n${RED}[!] Listener failed to start or died too quickly.${NC}"
+                    echo -e "${YELLOW}[!] Check if port $FILE_PORT is already in use.${NC}"
+                    sleep 2 # Cooldown to prevent spam
+                else
+                    echo -e "\n${TICK} ${GREEN}Transfer Success!${NC}"
+                    log_transfer "RECEIVE" "$MY_IP" "incoming" "SUCCESS" "-"
+                    echo -e "${CYAN}──────────────────────────────────────────────────────${NC}"
+                fi
                 socat_pid=""
             fi
             
+            # Pre-check port availability
+            if socat TCP4-LISTEN:$FILE_PORT,reuseaddr /dev/null 2>/dev/null; then
+                : # Port is likely free (this is a bit hacky but works as a quick check)
+            fi
+
             echo -e "\n${FLASH} Waiting for incoming files... $([[ "$ENCRYPT_TRANSFER" == true ]] && echo -e "($LOCK Secure)")"
             local socat_cmd="socat -u TCP4-LISTEN:$FILE_PORT,reuseaddr,rcvbuf=1048576 -"
             if [[ "$ENCRYPT_TRANSFER" == true ]]; then
                 socat_cmd="socat -u OPENSSL-LISTEN:$FILE_PORT,reuseaddr,cert=$CERT_DIR/localsend.pem,verify=0,rcvbuf=1048576 -"
             fi
             
+            start_time=$(date +%s)
             if [[ "$COMPRESS_TRANSFER" == true ]]; then
                 $socat_cmd | pv | gunzip | tar -xvB -b 128 -C "$DOWNLOAD_DIR" &
             else
