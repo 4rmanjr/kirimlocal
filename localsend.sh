@@ -3,7 +3,7 @@
 # --- Configuration ---
 FILE_PORT=${FILE_PORT:-9999}
 DISCOVERY_PORT=${DISCOVERY_PORT:-9998}
-VERSION="2.2"
+VERSION="2.3"
 VERIFY_CHECKSUM=false
 COMPRESS_TRANSFER=false
 ENCRYPT_TRANSFER=false
@@ -73,9 +73,9 @@ print_box_line() {
     local width="${3:-$BOX_WIDTH}"
     local align="${4:-left}"
     
-    # Strip ANSI to get visible length
+    # Strip ANSI and calculate visual width using wc -L
     local plain=$(echo -e "$content" | sed 's/\x1b\[[0-9;]*m//g')
-    local plain_len=${#plain}
+    local plain_len=$(echo -n "$plain" | wc -L)
     
     local inner_width=$((width - 4))
     local pad_total=$((inner_width - plain_len))
