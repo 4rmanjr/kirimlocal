@@ -3,7 +3,7 @@
 # --- Configuration ---
 FILE_PORT=${FILE_PORT:-9999}
 DISCOVERY_PORT=${DISCOVERY_PORT:-9998}
-VERSION="1.9"
+VERSION="2.0"
 VERIFY_CHECKSUM=false
 COMPRESS_TRANSFER=false
 
@@ -324,20 +324,41 @@ receive_mode() {
     local disc_pid=$!
     BG_PIDS+=("$disc_pid")
     
-    trap "kill $disc_pid 2>/dev/null; BG_PIDS=(\"\${BG_PIDS[@]/\$disc_pid}\"); return 0" INT
+    local socat_pid=""
+    
+    trap "kill $disc_pid $socat_pid 2>/dev/null; BG_PIDS=(\"\${BG_PIDS[@]/\$disc_pid}\"); return 0" INT
     
     while $RUNNING; do
-        echo -e "\n${FLASH} Waiting for incoming files..."
-        if [[ "$COMPRESS_TRANSFER" == true ]]; then
-            socat -u TCP4-LISTEN:$FILE_PORT,reuseaddr,rcvbuf=1048576 - | gunzip | tar -xvB -b 128
-        else
-            socat -u TCP4-LISTEN:$FILE_PORT,reuseaddr,rcvbuf=1048576 - | tar -xvB -b 128
+        if [[ -z "$socat_pid" ]] || ! kill -0 "$socat_pid" 2>/dev/null; then
+            if [[ -n "$socat_pid" ]]; then
+                # Transfer just finished
+                echo -e "\n${TICK} ${GREEN}Transfer Success!${NC}"
+                log_transfer "RECEIVE" "$MY_IP" "incoming" "SUCCESS" "-"
+                echo -e "${CYAN}──────────────────────────────────────────────────────${NC}"
+                socat_pid=""
+            fi
+            
+            echo -e "\n${FLASH} Waiting for incoming files..."
+            if [[ "$COMPRESS_TRANSFER" == true ]]; then
+                socat -u TCP4-LISTEN:$FILE_PORT,reuseaddr,rcvbuf=1048576 - | gunzip | tar -xvB -b 128 &
+            else
+                socat -u TCP4-LISTEN:$FILE_PORT,reuseaddr,rcvbuf=1048576 - | tar -xvB -b 128 &
+            fi
+            socat_pid=$!
         fi
-        echo -e "\n${TICK} ${GREEN}Transfer Success!${NC}"
-        log_transfer "RECEIVE" "$MY_IP" "incoming" "SUCCESS" "-"
-        echo -e "${CYAN}──────────────────────────────────────────────────────${NC}"
+        
+        # Poll for input (1 second timeout)
+        read -t 1 -n 1 key
+        if [[ $? -eq 0 ]]; then
+            case "$key" in
+                b|B) break ;;
+                q|Q) cleanup_and_exit ;;
+            esac
+        fi
     done
-    kill "$disc_pid" 2>/dev/null
+    
+    kill "$disc_pid" "$socat_pid" 2>/dev/null
+    BG_PIDS=("${BG_PIDS[@]/$disc_pid}")
 }
 
 send_mode() {
