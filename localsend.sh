@@ -3,7 +3,7 @@
 # --- Configuration ---
 FILE_PORT=${FILE_PORT:-9999}
 DISCOVERY_PORT=${DISCOVERY_PORT:-9998}
-VERSION="2.4"
+VERSION="2.5"
 VERIFY_CHECKSUM=false
 COMPRESS_TRANSFER=false
 ENCRYPT_TRANSFER=false
@@ -410,12 +410,25 @@ receive_mode() {
             fi
             
             start_time=$(date +%s)
-            if [[ "$COMPRESS_TRANSFER" == true ]]; then
-                $socat_cmd | pv | gunzip | tar -xvB -b 128 -C "$DOWNLOAD_DIR" &
-            else
-                $socat_cmd | pv | tar -xvB -b 128 -C "$DOWNLOAD_DIR" &
-            fi
+            # Create a named pipe for size extraction
+            local fifo="/tmp/localsend_$$"
+            mkfifo "$fifo" 2>/dev/null
+            
+            (
+                $socat_cmd | {
+                    # Read 16-byte size header
+                    read -r -n 16 size_header
+                    expected_size=$((10#$size_header))
+                    
+                    if [[ "$COMPRESS_TRANSFER" == true ]]; then
+                        pv -s "$expected_size" | gunzip | tar -xvB -b 128 -C "$DOWNLOAD_DIR"
+                    else
+                        pv -s "$expected_size" | tar -xvB -b 128 -C "$DOWNLOAD_DIR"
+                    fi
+                }
+            ) &
             socat_pid=$!
+            rm -f "$fifo"
         fi
         
         # Poll for input (1 second timeout)
@@ -537,11 +550,11 @@ send_mode() {
         
         if [[ "$COMPRESS_TRANSFER" == true ]]; then
             [[ $attempt -eq 1 ]] && echo -e "${INFO} ${CYAN}Compression enabled (gzip)${NC}"
-            if tar -cv -b 128 "${items[@]}" 2>/dev/null | gzip | pv -p -b -r -a -N "Transfer" | $socat_cmd 2>/dev/null; then
+            if { printf "%016d" "$total_size"; tar -cv -b 128 "${items[@]}" 2>/dev/null | gzip; } | pv -s "$total_size" -p -b -r -a -N "Transfer" | $socat_cmd 2>/dev/null; then
                 success=true; break
             fi
         else
-            if tar -cv -b 128 "${items[@]}" 2>/dev/null | pv -p -b -r -a -N "Transfer" | $socat_cmd 2>/dev/null; then
+            if { printf "%016d" "$total_size"; tar -cv -b 128 "${items[@]}" 2>/dev/null; } | pv -s "$total_size" -p -b -r -a -N "Transfer" | $socat_cmd 2>/dev/null; then
                 success=true; break
             fi
         fi
