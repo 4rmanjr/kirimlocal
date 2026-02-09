@@ -3,7 +3,7 @@
 # --- Configuration ---
 FILE_PORT=${FILE_PORT:-9999}
 DISCOVERY_PORT=${DISCOVERY_PORT:-9998}
-VERSION="1.7"
+VERSION="1.8"
 VERIFY_CHECKSUM=false
 COMPRESS_TRANSFER=false
 
@@ -21,6 +21,23 @@ TICK="${GREEN}✔${NC}"
 ARROW="${BLUE}➜${NC}"
 FLASH="${YELLOW}⚡${NC}"
 INFO="${CYAN}ℹ${NC}"
+
+# Global state
+RUNNING=true
+BG_PIDS=()
+
+# Safe exit handler
+cleanup_and_exit() {
+    RUNNING=false
+    for pid in "${BG_PIDS[@]}"; do
+        kill "$pid" 2>/dev/null
+    done
+    echo -e "\n${TICK} ${GREEN}Goodbye!${NC}"
+    exit 0
+}
+
+# Unified navigation hint
+NAV_HINT="${CYAN}[b]${NC} Back | ${CYAN}[q]${NC} Quit"
 
 # --- Help ---
 show_help() {
@@ -245,13 +262,15 @@ receive_mode() {
     printf "${PURPLE}┃${NC}  ${INFO} Name : %-41s ${PURPLE}┃${NC}\n" "${YELLOW}$MY_NAME${NC}"
     printf "${PURPLE}┃${NC}  ${INFO} IP   : %-41s ${PURPLE}┃${NC}\n" "${YELLOW}$MY_IP${NC}"
     echo -e "${PURPLE}┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛${NC}"
-    echo -e "${YELLOW}Tip: Press Ctrl+C to return to Main Menu${NC}"
+    echo -e "${YELLOW}Navigation: ${NC}${NAV_HINT} ${CYAN}| Ctrl+C${NC} Back"
     
     start_discovery_responder &
     local disc_pid=$!
-    trap "kill $disc_pid 2>/dev/null; interactive_menu; return" INT
+    BG_PIDS+=("$disc_pid")
     
-    while true; do
+    trap "kill $disc_pid 2>/dev/null; BG_PIDS=(\"\${BG_PIDS[@]/\$disc_pid}\"); return 0" INT
+    
+    while $RUNNING; do
         echo -e "\n${FLASH} Waiting for incoming files..."
         if [[ "$COMPRESS_TRANSFER" == true ]]; then
             socat -u TCP4-LISTEN:$FILE_PORT,reuseaddr,rcvbuf=1048576 - | gunzip | tar -xvB -b 128
@@ -262,6 +281,7 @@ receive_mode() {
         log_transfer "RECEIVE" "$MY_IP" "incoming" "SUCCESS" "-"
         echo -e "${CYAN}──────────────────────────────────────────────────────${NC}"
     done
+    kill "$disc_pid" 2>/dev/null
 }
 
 send_mode() {
@@ -275,21 +295,21 @@ send_mode() {
         printf "${BLUE}┃${NC}  ${INFO} Name : %-41s ${BLUE}┃${NC}\n" "${YELLOW}$MY_NAME${NC}"
         printf "${BLUE}┃${NC}  ${INFO} IP   : %-41s ${BLUE}┃${NC}\n" "${YELLOW}$MY_IP${NC}"
         echo -e "${BLUE}┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛${NC}"
-        echo -e "${YELLOW}Tip: Press Ctrl+C or type 'b' to go back${NC}"
+        echo -e "${YELLOW}Navigation: ${NC}${NAV_HINT}"
         echo -e "\n${INFO} ${YELLOW}Drag and drop files here or type paths${NC}"
         echo -en "${ARROW} ${YELLOW}Path(s):${NC} "
         read -e -r input_paths
-        [[ -z "$input_paths" || "$input_paths" == "b" ]] && { interactive_menu; return; }
-        [[ "$input_paths" == "q" ]] && exit 0
+        [[ -z "$input_paths" || "$input_paths" == "b" ]] && return 0
+        [[ "$input_paths" == "q" ]] && cleanup_and_exit
         read -ra items <<< "$input_paths"
     fi
 
-    [[ ${#items[@]} -eq 0 ]] && { interactive_menu; return; }
+    [[ ${#items[@]} -eq 0 ]] && return 0
     if ! validate_paths "${items[@]}"; then
         echo -en "\n${ARROW} Press Enter to try again..."; read -r
         send_mode; return
     fi
-    trap "interactive_menu; return" INT
+    trap "return 0" INT
 
     while true; do
         clear
@@ -309,8 +329,8 @@ send_mode() {
             echo -e "  ${CYAN}[r]${NC} Rescan | ${CYAN}[m]${NC} Manual | ${CYAN}[b]${NC} Back | ${CYAN}[q]${NC} Quit"
             echo -en "\n${ARROW} ${WHITE}Action:${NC} "; read -r r
             [[ "$r" == "r" ]] && continue
-            [[ "$r" == "b" ]] && { interactive_menu; return; }
-            [[ "$r" == "q" ]] && exit 0
+            [[ "$r" == "b" ]] && return 0
+            [[ "$r" == "q" ]] && cleanup_and_exit
             [[ "$r" == "m" ]] && choice="m" || { interactive_menu; return; }
         else
             echo -e "\n  ${YELLOW}ONLINE DEVICES:${NC}"
@@ -320,12 +340,13 @@ send_mode() {
                 IFS='|' read -r p n ip <<< "${peers[$i]}"
                 printf "  ${CYAN}%-4s${NC} ${GREEN}%-24s${NC} ${BLUE}%-15s${NC}\n" "$((i+1)))" "$n" "$ip"
             done
-            echo -e "\n  ${CYAN}r)${NC} Rescan | ${CYAN}m)${NC} Manual IP | ${CYAN}b)${NC} Back"
+            echo -e "\n  ${CYAN}[r]${NC} Rescan | ${CYAN}[m]${NC} Manual | ${NAV_HINT}"
             echo -en "\n${ARROW} ${WHITE}Select target:${NC} "; read -r choice
         fi
         
         if [[ "$choice" == "r" ]]; then continue
-        elif [[ "$choice" == "b" ]]; then interactive_menu; return
+        elif [[ "$choice" == "b" ]]; then return 0
+        elif [[ "$choice" == "q" ]]; then cleanup_and_exit
         elif [[ "$choice" == "m" ]]; then
             echo -en "\n${ARROW} ${YELLOW}Enter IP: "; read -r target_ip
             if validate_ip "$target_ip"; then
@@ -409,32 +430,35 @@ show_history() {
         echo -e "\n${YELLOW}No transfer history yet.${NC}"
     fi
     echo -en "\n${ARROW} Press Enter to go back..."; read -r
-    interactive_menu
 }
 
 interactive_menu() {
-    MY_IP=$(get_ip)
-    clear
-    echo -e "${CYAN}┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓${NC}"
-    echo -e "${CYAN}┃${NC}          ${GREEN}🚀 WELCOME TO LOCALSEND CLI v$VERSION${NC}          ${CYAN}┃${NC}"
-    echo -e "${CYAN}┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫${NC}"
-    echo -e "${CYAN}┃${NC}                                                      ${CYAN}┃${NC}"
-    echo -e "${CYAN}┃${NC}  ${WHITE}1)${NC} ${GREEN}Receive Files${NC}  (Wait for incoming)           ${CYAN}┃${NC}"
-    echo -e "${CYAN}┃${NC}  ${WHITE}2)${NC} ${BLUE}Send Files${NC}     (Scan & send to peer)         ${CYAN}┃${NC}"
-    echo -e "${CYAN}┃${NC}  ${WHITE}h)${NC} ${PURPLE}History${NC}        (View transfer history)        ${CYAN}┃${NC}"
-    echo -e "${CYAN}┃${NC}  ${WHITE}i)${NC} ${YELLOW}Install Global${NC} (Access from anywhere)        ${CYAN}┃${NC}"
-    echo -e "${CYAN}┃${NC}  ${WHITE}q)${NC} ${RED}Quit${NC}           (Exit application)            ${CYAN}┃${NC}"
-    echo -e "${CYAN}┃${NC}                                                      ${CYAN}┃${NC}"
-    echo -e "${CYAN}┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛${NC}"
-    echo -en "\n${ARROW} ${WHITE}Select option:${NC} "; read -r c
-    case "$c" in
-        1) receive_mode ;;
-        2) send_mode ;;
-        h|H) show_history ;;
-        i|I) install_global ;;
-        q|Q) exit 0 ;;
-        *) interactive_menu ;;
-    esac
+    trap "cleanup_and_exit" INT TERM
+    
+    while $RUNNING; do
+        MY_IP=$(get_ip)
+        clear
+        echo -e "${CYAN}┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓${NC}"
+        echo -e "${CYAN}┃${NC}          ${GREEN}🚀 WELCOME TO LOCALSEND CLI v$VERSION${NC}          ${CYAN}┃${NC}"
+        echo -e "${CYAN}┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫${NC}"
+        echo -e "${CYAN}┃${NC}                                                      ${CYAN}┃${NC}"
+        echo -e "${CYAN}┃${NC}  ${WHITE}1)${NC} ${GREEN}Receive Files${NC}  (Wait for incoming)           ${CYAN}┃${NC}"
+        echo -e "${CYAN}┃${NC}  ${WHITE}2)${NC} ${BLUE}Send Files${NC}     (Scan & send to peer)         ${CYAN}┃${NC}"
+        echo -e "${CYAN}┃${NC}  ${WHITE}h)${NC} ${PURPLE}History${NC}        (View transfer history)        ${CYAN}┃${NC}"
+        echo -e "${CYAN}┃${NC}  ${WHITE}i)${NC} ${YELLOW}Install Global${NC} (Access from anywhere)        ${CYAN}┃${NC}"
+        echo -e "${CYAN}┃${NC}  ${WHITE}q)${NC} ${RED}Quit${NC}           (Exit application)            ${CYAN}┃${NC}"
+        echo -e "${CYAN}┃${NC}                                                      ${CYAN}┃${NC}"
+        echo -e "${CYAN}┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛${NC}"
+        echo -en "\n${ARROW} ${WHITE}Select option:${NC} "; read -r c
+        case "$c" in
+            1) receive_mode ;;
+            2) send_mode ;;
+            h|H) show_history ;;
+            i|I) install_global ;;
+            q|Q) cleanup_and_exit ;;
+            *) ;;  # Invalid input, loop continues
+        esac
+    done
 }
 
 if [[ $# -eq 0 ]]; then interactive_menu; else
