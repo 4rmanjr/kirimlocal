@@ -365,8 +365,19 @@ receive_mode() {
                 
                 if [[ $duration -lt 2 ]]; then
                     echo -e "\n${RED}[!] Listener failed to start or died too quickly.${NC}"
-                    echo -e "${YELLOW}[!] Check if port $FILE_PORT is already in use.${NC}"
-                    sleep 2 # Cooldown to prevent spam
+                    echo -e "${YELLOW}[!] Port $FILE_PORT might be in use by another process.${NC}"
+                    echo -e "${CYAN}[r]${NC} Retry | ${CYAN}[p]${NC} Use different port | ${NAV_HINT}"
+                    echo -en "\n${ARROW} ${WHITE}Action:${NC} "; read -r action
+                    case "$action" in
+                        r|R) socat_pid=""; continue ;;
+                        p|P)
+                            echo -en "${ARROW} ${YELLOW}Enter new port: ${NC}"; read -r new_port
+                            [[ "$new_port" =~ ^[0-9]+$ ]] && FILE_PORT="$new_port"
+                            socat_pid=""; continue ;;
+                        b|B) break ;;
+                        q|Q) cleanup_and_exit ;;
+                        *) socat_pid=""; continue ;;
+                    esac
                 else
                     echo -e "\n${TICK} ${GREEN}Transfer Success!${NC}"
                     log_transfer "RECEIVE" "$MY_IP" "incoming" "SUCCESS" "-"
@@ -375,9 +386,21 @@ receive_mode() {
                 socat_pid=""
             fi
             
-            # Pre-check port availability
-            if socat TCP4-LISTEN:$FILE_PORT,reuseaddr /dev/null 2>/dev/null; then
-                : # Port is likely free (this is a bit hacky but works as a quick check)
+            # Check if port is already in use before trying
+            if ss -tuln | grep -q ":$FILE_PORT "; then
+                echo -e "\n${RED}[!] Port $FILE_PORT is already in use.${NC}"
+                echo -e "${CYAN}[r]${NC} Retry | ${CYAN}[p]${NC} Use different port | ${NAV_HINT}"
+                echo -en "\n${ARROW} ${WHITE}Action:${NC} "; read -r action
+                case "$action" in
+                    r|R) continue ;;
+                    p|P)
+                        echo -en "${ARROW} ${YELLOW}Enter new port: ${NC}"; read -r new_port
+                        [[ "$new_port" =~ ^[0-9]+$ ]] && FILE_PORT="$new_port"
+                        continue ;;
+                    b|B) break ;;
+                    q|Q) cleanup_and_exit ;;
+                    *) continue ;;
+                esac
             fi
 
             echo -e "\n${FLASH} Waiting for incoming files... $([[ "$ENCRYPT_TRANSFER" == true ]] && echo -e "($LOCK Secure)")"
