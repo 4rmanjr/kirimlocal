@@ -3,9 +3,10 @@
 # --- Configuration ---
 FILE_PORT=${FILE_PORT:-9999}
 DISCOVERY_PORT=${DISCOVERY_PORT:-9998}
-VERSION="2.0"
+VERSION="2.1"
 VERIFY_CHECKSUM=false
 COMPRESS_TRANSFER=false
+DOWNLOAD_DIR=${DOWNLOAD_DIR:-$HOME/Downloads/LocalSend}
 
 # Colors & Icons
 GREEN='\033[0;32m'
@@ -110,6 +111,7 @@ show_help() {
     echo "  -p, --port <port>            Custom transfer port (default: 9999)"
     echo "  -z, --compress               Enable gzip compression (faster for text)"
     echo "  -c, --checksum               Verify checksum after transfer"
+    echo "  -d, --dir <path>             Custom download directory (default: ~/Downloads/LocalSend)"
     echo "  -h, --help                   Show this help message"
     echo "  -v, --version                Show version"
     echo
@@ -121,6 +123,7 @@ show_help() {
     echo "  localsend -s -c file.zip     Send with checksum verify"
     echo
     echo -e "${WHITE}ENVIRONMENT:${NC}"
+    echo "  DOWNLOAD_DIR                 Override default download directory"
     echo "  FILE_PORT                    Override default port"
     echo "  DISCOVERY_PORT               Override discovery port"
     exit 0
@@ -311,12 +314,14 @@ scan_devices() {
 # --- Modes ---
 receive_mode() {
     MY_IP=$(get_ip)
+    mkdir -p "$DOWNLOAD_DIR"
     clear
     print_box_top "$PURPLE"
     print_box_line "${GREEN}⚡ LOCALSEND CLI RECEIVER (v$VERSION)${NC}" "$PURPLE" "$BOX_WIDTH" "center"
     print_box_sep "$PURPLE"
     print_box_line "${INFO} Name : ${YELLOW}$MY_NAME${NC}" "$PURPLE"
     print_box_line "${INFO} IP   : ${YELLOW}$MY_IP${NC}" "$PURPLE"
+    print_box_line "${INFO} Dest : ${YELLOW}${DOWNLOAD_DIR//$HOME/~}${NC}" "$PURPLE"
     print_box_bottom "$PURPLE"
     echo -e "${YELLOW}Navigation: ${NC}${NAV_HINT} ${CYAN}| Ctrl+C${NC} Back"
     
@@ -340,9 +345,9 @@ receive_mode() {
             
             echo -e "\n${FLASH} Waiting for incoming files..."
             if [[ "$COMPRESS_TRANSFER" == true ]]; then
-                socat -u TCP4-LISTEN:$FILE_PORT,reuseaddr,rcvbuf=1048576 - | gunzip | tar -xvB -b 128 &
+                socat -u TCP4-LISTEN:$FILE_PORT,reuseaddr,rcvbuf=1048576 - | pv | gunzip | tar -xvB -b 128 -C "$DOWNLOAD_DIR" &
             else
-                socat -u TCP4-LISTEN:$FILE_PORT,reuseaddr,rcvbuf=1048576 - | tar -xvB -b 128 &
+                socat -u TCP4-LISTEN:$FILE_PORT,reuseaddr,rcvbuf=1048576 - | pv | tar -xvB -b 128 -C "$DOWNLOAD_DIR" &
             fi
             socat_pid=$!
         fi
@@ -544,6 +549,7 @@ if [[ $# -eq 0 ]]; then interactive_menu; else
             -h|--help) show_help ;;
             -v|--version) echo "LocalSend CLI v$VERSION"; exit 0 ;;
             -p|--port) FILE_PORT="$2"; shift 2 ;;
+            -d|--dir) DOWNLOAD_DIR="$2"; shift 2 ;;
             -z|--compress) COMPRESS_TRANSFER=true; shift ;;
             -c|--checksum) VERIFY_CHECKSUM=true; shift ;;
             -r|--receive) receive_mode; break ;;
