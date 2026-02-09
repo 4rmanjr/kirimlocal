@@ -1,9 +1,11 @@
 #!/bin/bash
 
 # --- Configuration ---
-FILE_PORT=9999
-DISCOVERY_PORT=9998
-VERSION="1.3"
+FILE_PORT=${FILE_PORT:-9999}
+DISCOVERY_PORT=${DISCOVERY_PORT:-9998}
+VERSION="1.7"
+VERIFY_CHECKSUM=false
+COMPRESS_TRANSFER=false
 
 # Colors & Icons
 GREEN='\033[0;32m'
@@ -20,6 +22,37 @@ ARROW="${BLUE}➜${NC}"
 FLASH="${YELLOW}⚡${NC}"
 INFO="${CYAN}ℹ${NC}"
 
+# --- Help ---
+show_help() {
+    echo -e "${GREEN}LocalSend CLI v$VERSION${NC} - Fast local file sharing"
+    echo
+    echo -e "${WHITE}USAGE:${NC}"
+    echo "  localsend                    Interactive menu"
+    echo "  localsend -r                 Receive mode"
+    echo "  localsend -s <files...>      Send files"
+    echo
+    echo -e "${WHITE}OPTIONS:${NC}"
+    echo "  -r, --receive                Start in receive mode"
+    echo "  -s, --send <files...>        Send specified files"
+    echo "  -p, --port <port>            Custom transfer port (default: 9999)"
+    echo "  -z, --compress               Enable gzip compression (faster for text)"
+    echo "  -c, --checksum               Verify checksum after transfer"
+    echo "  -h, --help                   Show this help message"
+    echo "  -v, --version                Show version"
+    echo
+    echo -e "${WHITE}EXAMPLES:${NC}"
+    echo "  localsend -s file.txt        Send single file"
+    echo "  localsend -s *.pdf           Send all PDFs"
+    echo "  localsend -r -p 8888         Receive on port 8888"
+    echo "  localsend -s -z *.log        Send with compression"
+    echo "  localsend -s -c file.zip     Send with checksum verify"
+    echo
+    echo -e "${WHITE}ENVIRONMENT:${NC}"
+    echo "  FILE_PORT                    Override default port"
+    echo "  DISCOVERY_PORT               Override discovery port"
+    exit 0
+}
+
 # --- Dependency Check ---
 check_dependencies() {
     local missing=()
@@ -29,19 +62,36 @@ check_dependencies() {
     done
     if [ ${#missing[@]} -gt 0 ]; then
         echo -e "${YELLOW}[!] Missing tools: ${missing[*]}${NC}"
-        local pkg_mgr=""
-        local install_cmd=""
-        if command -v apt-get &>/dev/null; then pkg_mgr="apt"; install_cmd="sudo apt-get update && sudo apt-get install -y"
-        elif command -v pacman &>/dev/null; then pkg_mgr="pacman"; install_cmd="sudo pacman -Sy --noconfirm"
-        elif command -v dnf &>/dev/null; then pkg_mgr="dnf"; install_cmd="sudo dnf install -y"
-        elif command -v brew &>/dev/null; then pkg_mgr="brew"; install_cmd="brew install"
+        echo -e "${CYAN}[*] Auto-installing dependencies...${NC}"
+        local pkg_mgr="" update_cmd="" install_cmd=""
+        if command -v apt-get &>/dev/null; then
+            pkg_mgr="apt"; update_cmd="sudo apt-get update -qq"; install_cmd="sudo apt-get install -y -qq"
+        elif command -v pacman &>/dev/null; then
+            pkg_mgr="pacman"; update_cmd="sudo pacman -Sy"; install_cmd="sudo pacman -S --noconfirm"
+        elif command -v dnf &>/dev/null; then
+            pkg_mgr="dnf"; update_cmd="sudo dnf makecache -q"; install_cmd="sudo dnf install -y -q"
+        elif command -v yum &>/dev/null; then
+            pkg_mgr="yum"; update_cmd="sudo yum makecache -q"; install_cmd="sudo yum install -y -q"
+        elif command -v zypper &>/dev/null; then
+            pkg_mgr="zypper"; update_cmd="sudo zypper refresh -q"; install_cmd="sudo zypper install -y -q"
+        elif command -v apk &>/dev/null; then
+            pkg_mgr="apk"; update_cmd="sudo apk update -q"; install_cmd="sudo apk add -q"
+        elif command -v brew &>/dev/null; then
+            pkg_mgr="brew"; update_cmd="brew update"; install_cmd="brew install"
         fi
         if [[ -n "$pkg_mgr" ]]; then
-            echo -en "${BLUE}[?] Install missing tools via $pkg_mgr? (y/n): ${NC}"
-            read -r choice
-            [[ "$choice" =~ ^[Yy]$ ]] && eval "$install_cmd ${missing[*]}" || exit 1
+            echo -e "${INFO} Updating package cache ($pkg_mgr)..."
+            $update_cmd 2>/dev/null
+            echo -e "${INFO} Installing: ${missing[*]}..."
+            if $install_cmd "${missing[@]}"; then
+                echo -e "${TICK} Dependencies installed successfully!"
+            else
+                echo -e "${RED}[!] Failed to install dependencies. Please install manually: ${missing[*]}${NC}"
+                exit 1
+            fi
         else
-            echo -e "${RED}Install manually: ${missing[*]}${NC}"; exit 1
+            echo -e "${RED}[!] No supported package manager found. Install manually: ${missing[*]}${NC}"
+            exit 1
         fi
     fi
 }
@@ -75,6 +125,82 @@ generate_name() {
     local animals=("Eagle" "Wolf" "Tiger" "Panda" "Falcon" "Shark")
     echo "${colors[$RANDOM % ${#colors[@]}]}-${animals[$RANDOM % ${#animals[@]}]}"
 }
+
+validate_ip() {
+    local ip="$1"
+    if [[ -z "$ip" ]]; then return 1; fi
+    local regex='^([0-9]{1,3}\.){3}[0-9]{1,3}$'
+    if [[ ! "$ip" =~ $regex ]]; then return 1; fi
+    IFS='.' read -ra octets <<< "$ip"
+    for octet in "${octets[@]}"; do
+        ((octet < 0 || octet > 255)) && return 1
+    done
+    return 0
+}
+
+validate_paths() {
+    local items=("$@")
+    local invalid=()
+    for item in "${items[@]}"; do
+        [[ ! -e "$item" ]] && invalid+=("$item")
+    done
+    if [[ ${#invalid[@]} -gt 0 ]]; then
+        echo -e "${RED}[!] File/folder not found:${NC}"
+        for f in "${invalid[@]}"; do echo -e "    ${YELLOW}✖ $f${NC}"; done
+        return 1
+    fi
+    return 0
+}
+
+calculate_checksum() {
+    local items=("$@")
+    if command -v sha256sum &>/dev/null; then
+        tar -c "${items[@]}" 2>/dev/null | sha256sum | awk '{print $1}'
+    elif command -v shasum &>/dev/null; then
+        tar -c "${items[@]}" 2>/dev/null | shasum -a 256 | awk '{print $1}'
+    else
+        echo "CHECKSUM_NOT_AVAILABLE"
+    fi
+}
+
+# History & Retry Config
+HISTORY_FILE="${HOME}/.localsend_history"
+MAX_RETRIES=3
+RETRY_DELAY=2
+
+log_transfer() {
+    local direction="$1" target="$2" items="$3" status="$4" size="$5"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "${timestamp}|${direction}|${target}|${items}|${status}|${size}" >> "$HISTORY_FILE"
+}
+
+get_total_size() {
+    local items=("$@")
+    local total=0
+    for item in "${items[@]}"; do
+        if [[ -e "$item" ]]; then
+            local s=$(du -sb "$item" 2>/dev/null | awk '{print $1}')
+            ((total += s))
+        fi
+    done
+    echo "$total"
+}
+
+human_size() {
+    local bytes=$1
+    if ((bytes >= 1073741824)); then echo "$(echo "scale=1; $bytes/1073741824" | bc)G"
+    elif ((bytes >= 1048576)); then echo "$(echo "scale=1; $bytes/1048576" | bc)M"
+    elif ((bytes >= 1024)); then echo "$(echo "scale=1; $bytes/1024" | bc)K"
+    else echo "${bytes}B"; fi
+}
+
+# Early parse for help/version (no dependencies needed)
+for arg in "$@"; do
+    case "$arg" in
+        -h|--help) show_help ;;
+        -v|--version) echo "LocalSend CLI v$VERSION"; exit 0 ;;
+    esac
+done
 
 check_dependencies
 MY_IP=$(get_ip)
@@ -127,8 +253,13 @@ receive_mode() {
     
     while true; do
         echo -e "\n${FLASH} Waiting for incoming files..."
-        socat -u TCP4-LISTEN:$FILE_PORT,reuseaddr,rcvbuf=1048576 - | tar -xvB -b 128
+        if [[ "$COMPRESS_TRANSFER" == true ]]; then
+            socat -u TCP4-LISTEN:$FILE_PORT,reuseaddr,rcvbuf=1048576 - | gunzip | tar -xvB -b 128
+        else
+            socat -u TCP4-LISTEN:$FILE_PORT,reuseaddr,rcvbuf=1048576 - | tar -xvB -b 128
+        fi
         echo -e "\n${TICK} ${GREEN}Transfer Success!${NC}"
+        log_transfer "RECEIVE" "$MY_IP" "incoming" "SUCCESS" "-"
         echo -e "${CYAN}──────────────────────────────────────────────────────${NC}"
     done
 }
@@ -150,10 +281,14 @@ send_mode() {
         read -e -r input_paths
         [[ -z "$input_paths" || "$input_paths" == "b" ]] && { interactive_menu; return; }
         [[ "$input_paths" == "q" ]] && exit 0
-        eval "items=($input_paths)"
+        read -ra items <<< "$input_paths"
     fi
 
     [[ ${#items[@]} -eq 0 ]] && { interactive_menu; return; }
+    if ! validate_paths "${items[@]}"; then
+        echo -en "\n${ARROW} Press Enter to try again..."; read -r
+        send_mode; return
+    fi
     trap "interactive_menu; return" INT
 
     while true; do
@@ -191,23 +326,90 @@ send_mode() {
         
         if [[ "$choice" == "r" ]]; then continue
         elif [[ "$choice" == "b" ]]; then interactive_menu; return
-        elif [[ "$choice" == "m" ]]; then echo -en "\n${ARROW} ${YELLOW}Enter IP: "; read -r target_ip; [[ -n "$target_ip" ]] && break
+        elif [[ "$choice" == "m" ]]; then
+            echo -en "\n${ARROW} ${YELLOW}Enter IP: "; read -r target_ip
+            if validate_ip "$target_ip"; then
+                break
+            else
+                echo -e "${RED}[!] Invalid IP address format${NC}"
+                sleep 1
+            fi
         elif [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -le "${#peers[@]}" ]; then
             IFS='|' read -r p n target_ip <<< "${peers[$((choice-1))]}"; break
         fi
     done
 
+    local total_size=$(get_total_size "${items[@]}")
+    local human_total=$(human_size "$total_size")
+    local item_names=$(printf "%s," "${items[@]}" | sed 's/,$//')
+    
     echo -e "\n${TICK} ${YELLOW}Initiating transfer to ${GREEN}$target_ip${NC}..."
+    echo -e "${INFO} ${WHITE}Total size: ${CYAN}$human_total${NC} (${#items[@]} items)"
+    if [[ "$VERIFY_CHECKSUM" == true ]]; then
+        echo -e "${INFO} ${CYAN}Calculating checksum...${NC}"
+        local checksum=$(calculate_checksum "${items[@]}")
+        echo -e "${INFO} ${WHITE}SHA256: ${YELLOW}${checksum:0:16}...${NC}"
+    fi
     echo -e "${CYAN} ──────────────────────────────────────────────────────${NC}"
-    tar -cv -b 128 "${items[@]}" | pv -p -b -r -a -N "Transfer" | socat -u - TCP4:$target_ip:$FILE_PORT,sndbuf=1048576,tcpnodelay
+    
+    local attempt=1 success=false
+    while [[ $attempt -le $MAX_RETRIES ]]; do
+        if [[ $attempt -gt 1 ]]; then
+            echo -e "${YELLOW}[!] Retry attempt $attempt/$MAX_RETRIES...${NC}"
+        fi
+        if [[ "$COMPRESS_TRANSFER" == true ]]; then
+            [[ $attempt -eq 1 ]] && echo -e "${INFO} ${CYAN}Compression enabled (gzip)${NC}"
+            if tar -cv -b 128 "${items[@]}" 2>/dev/null | gzip | pv -p -b -r -a -N "Transfer" | socat -u - TCP4:$target_ip:$FILE_PORT,sndbuf=1048576,tcpnodelay 2>/dev/null; then
+                success=true; break
+            fi
+        else
+            if tar -cv -b 128 "${items[@]}" 2>/dev/null | pv -p -b -r -a -N "Transfer" | socat -u - TCP4:$target_ip:$FILE_PORT,sndbuf=1048576,tcpnodelay 2>/dev/null; then
+                success=true; break
+            fi
+        fi
+        ((attempt++))
+        [[ $attempt -le $MAX_RETRIES ]] && sleep $RETRY_DELAY
+    done
+    
     echo -e "${CYAN} ──────────────────────────────────────────────────────${NC}"
-    echo -e "${TICK} ${GREEN}Success! All items sent.${NC}"
+    if [[ "$success" == true ]]; then
+        echo -e "${TICK} ${GREEN}Success! All items sent.${NC}"
+        log_transfer "SEND" "$target_ip" "$item_names" "SUCCESS" "$human_total"
+        if [[ "$VERIFY_CHECKSUM" == true ]]; then
+            echo -e "${INFO} ${WHITE}Checksum: ${YELLOW}${checksum:0:32}${NC}"
+        fi
+    else
+        echo -e "${RED}[!] Transfer failed after $MAX_RETRIES attempts${NC}"
+        log_transfer "SEND" "$target_ip" "$item_names" "FAILED" "$human_total"
+    fi
     echo -en "\n${ARROW} Press Enter to return to menu..."; read -r; interactive_menu
 }
 
 install_global() {
     sudo ln -sf "$(realpath "$0")" "/usr/local/bin/localsend" && echo -e "${TICK} Installed! Use 'localsend' anywhere."
     sleep 2; interactive_menu
+}
+
+show_history() {
+    clear
+    echo -e "${CYAN}┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓${NC}"
+    echo -e "${CYAN}┃${NC}          ${GREEN}📋 TRANSFER HISTORY${NC}                        ${CYAN}┃${NC}"
+    echo -e "${CYAN}┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛${NC}"
+    if [[ -f "$HISTORY_FILE" ]]; then
+        echo -e "\n${WHITE}DATE/TIME            DIR     TARGET          ITEMS                  STATUS   SIZE${NC}"
+        echo -e "${CYAN}─────────────────────────────────────────────────────────────────────────────────${NC}"
+        tail -20 "$HISTORY_FILE" | while IFS='|' read -r ts dir target items status size; do
+            local short_items="${items:0:20}"
+            [[ ${#items} -gt 20 ]] && short_items="${short_items}..."
+            printf "%-19s %-7s %-15s %-22s %-8s %s\n" "$ts" "$dir" "$target" "$short_items" "$status" "$size"
+        done
+        echo -e "${CYAN}─────────────────────────────────────────────────────────────────────────────────${NC}"
+        echo -e "${INFO} Showing last 20 entries from ${YELLOW}$HISTORY_FILE${NC}"
+    else
+        echo -e "\n${YELLOW}No transfer history yet.${NC}"
+    fi
+    echo -en "\n${ARROW} Press Enter to go back..."; read -r
+    interactive_menu
 }
 
 interactive_menu() {
@@ -219,6 +421,7 @@ interactive_menu() {
     echo -e "${CYAN}┃${NC}                                                      ${CYAN}┃${NC}"
     echo -e "${CYAN}┃${NC}  ${WHITE}1)${NC} ${GREEN}Receive Files${NC}  (Wait for incoming)           ${CYAN}┃${NC}"
     echo -e "${CYAN}┃${NC}  ${WHITE}2)${NC} ${BLUE}Send Files${NC}     (Scan & send to peer)         ${CYAN}┃${NC}"
+    echo -e "${CYAN}┃${NC}  ${WHITE}h)${NC} ${PURPLE}History${NC}        (View transfer history)        ${CYAN}┃${NC}"
     echo -e "${CYAN}┃${NC}  ${WHITE}i)${NC} ${YELLOW}Install Global${NC} (Access from anywhere)        ${CYAN}┃${NC}"
     echo -e "${CYAN}┃${NC}  ${WHITE}q)${NC} ${RED}Quit${NC}           (Exit application)            ${CYAN}┃${NC}"
     echo -e "${CYAN}┃${NC}                                                      ${CYAN}┃${NC}"
@@ -227,6 +430,7 @@ interactive_menu() {
     case "$c" in
         1) receive_mode ;;
         2) send_mode ;;
+        h|H) show_history ;;
         i|I) install_global ;;
         q|Q) exit 0 ;;
         *) interactive_menu ;;
@@ -234,9 +438,16 @@ interactive_menu() {
 }
 
 if [[ $# -eq 0 ]]; then interactive_menu; else
-    case "$1" in
-        -r|--receive) receive_mode ;;
-        -s|--send) shift; send_mode "$@" ;;
-        *) interactive_menu ;;
-    esac
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help) show_help ;;
+            -v|--version) echo "LocalSend CLI v$VERSION"; exit 0 ;;
+            -p|--port) FILE_PORT="$2"; shift 2 ;;
+            -z|--compress) COMPRESS_TRANSFER=true; shift ;;
+            -c|--checksum) VERIFY_CHECKSUM=true; shift ;;
+            -r|--receive) receive_mode; break ;;
+            -s|--send) shift; send_mode "$@"; break ;;
+            *) interactive_menu; break ;;
+        esac
+    done
 fi
