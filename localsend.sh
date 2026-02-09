@@ -3,10 +3,13 @@
 # --- Configuration ---
 FILE_PORT=${FILE_PORT:-9999}
 DISCOVERY_PORT=${DISCOVERY_PORT:-9998}
-VERSION="2.1"
+VERSION="2.2"
 VERIFY_CHECKSUM=false
 COMPRESS_TRANSFER=false
+ENCRYPT_TRANSFER=false
 DOWNLOAD_DIR=${DOWNLOAD_DIR:-$HOME/Downloads/LocalSend}
+CERT_DIR="$HOME/.localsend_certs"
+LOCK="${PURPLE}🔒${NC}"
 
 # Colors & Icons
 GREEN='\033[0;32m'
@@ -112,6 +115,7 @@ show_help() {
     echo "  -z, --compress               Enable gzip compression (faster for text)"
     echo "  -c, --checksum               Verify checksum after transfer"
     echo "  -d, --dir <path>             Custom download directory (default: ~/Downloads/LocalSend)"
+    echo "  -e, --encrypt                Enable TLS encryption for secure transfer"
     echo "  -h, --help                   Show this help message"
     echo "  -v, --version                Show version"
     echo
@@ -121,6 +125,8 @@ show_help() {
     echo "  localsend -r -p 8888         Receive on port 8888"
     echo "  localsend -s -z *.log        Send with compression"
     echo "  localsend -s -c file.zip     Send with checksum verify"
+    echo "  localsend -r -e              Receive with TLS encryption"
+    echo "  localsend -s -e file.txt     Send with TLS encryption"
     echo
     echo -e "${WHITE}ENVIRONMENT:${NC}"
     echo "  DOWNLOAD_DIR                 Override default download directory"
@@ -129,10 +135,23 @@ show_help() {
     exit 0
 }
 
+# --- Security ---
+generate_certs() {
+    if [[ ! -f "$CERT_DIR/localsend.pem" ]]; then
+        mkdir -p "$CERT_DIR"
+        echo -e "${INFO} ${CYAN}Generating self-signed certificate for encryption...${NC}"
+        openssl req -new -newkey rsa:2048 -days 365 -nodes -x509 \
+            -subj "/C=ID/ST=LocalSend/L=CLI/O=Security/CN=localsend" \
+            -keyout "$CERT_DIR/localsend.key" -out "$CERT_DIR/localsend.crt" &>/dev/null
+        cat "$CERT_DIR/localsend.key" "$CERT_DIR/localsend.crt" > "$CERT_DIR/localsend.pem"
+        rm "$CERT_DIR/localsend.key" "$CERT_DIR/localsend.crt"
+    fi
+}
+
 # --- Dependency Check ---
 check_dependencies() {
     local missing=()
-    local tools=("socat" "pv" "tar" "hostname")
+    local tools=("socat" "pv" "tar" "hostname" "openssl")
     for cmd in "${tools[@]}"; do
         if ! command -v "$cmd" &> /dev/null; then missing+=("$cmd"); fi
     done
@@ -315,9 +334,13 @@ scan_devices() {
 receive_mode() {
     MY_IP=$(get_ip)
     mkdir -p "$DOWNLOAD_DIR"
+    [[ "$ENCRYPT_TRANSFER" == true ]] && generate_certs
     clear
+    local title="${GREEN}⚡ LOCALSEND CLI RECEIVER (v$VERSION)${NC}"
+    [[ "$ENCRYPT_TRANSFER" == true ]] && title="$LOCK $title"
+    
     print_box_top "$PURPLE"
-    print_box_line "${GREEN}⚡ LOCALSEND CLI RECEIVER (v$VERSION)${NC}" "$PURPLE" "$BOX_WIDTH" "center"
+    print_box_line "$title" "$PURPLE" "$BOX_WIDTH" "center"
     print_box_sep "$PURPLE"
     print_box_line "${INFO} Name : ${YELLOW}$MY_NAME${NC}" "$PURPLE"
     print_box_line "${INFO} IP   : ${YELLOW}$MY_IP${NC}" "$PURPLE"
@@ -343,11 +366,16 @@ receive_mode() {
                 socat_pid=""
             fi
             
-            echo -e "\n${FLASH} Waiting for incoming files..."
+            echo -e "\n${FLASH} Waiting for incoming files... $([[ "$ENCRYPT_TRANSFER" == true ]] && echo -e "($LOCK Secure)")"
+            local socat_cmd="socat -u TCP4-LISTEN:$FILE_PORT,reuseaddr,rcvbuf=1048576 -"
+            if [[ "$ENCRYPT_TRANSFER" == true ]]; then
+                socat_cmd="socat -u OPENSSL-LISTEN:$FILE_PORT,reuseaddr,cert=$CERT_DIR/localsend.pem,verify=0,rcvbuf=1048576 -"
+            fi
+            
             if [[ "$COMPRESS_TRANSFER" == true ]]; then
-                socat -u TCP4-LISTEN:$FILE_PORT,reuseaddr,rcvbuf=1048576 - | pv | gunzip | tar -xvB -b 128 -C "$DOWNLOAD_DIR" &
+                $socat_cmd | pv | gunzip | tar -xvB -b 128 -C "$DOWNLOAD_DIR" &
             else
-                socat -u TCP4-LISTEN:$FILE_PORT,reuseaddr,rcvbuf=1048576 - | pv | tar -xvB -b 128 -C "$DOWNLOAD_DIR" &
+                $socat_cmd | pv | tar -xvB -b 128 -C "$DOWNLOAD_DIR" &
             fi
             socat_pid=$!
         fi
@@ -371,8 +399,10 @@ send_mode() {
     if [[ ${#items[@]} -eq 0 ]]; then
         trap "interactive_menu; return" INT
         clear
+        local title="${GREEN}⚡ LOCALSEND CLI SENDER (v$VERSION)${NC}"
+        [[ "$ENCRYPT_TRANSFER" == true ]] && title="$LOCK $title"
         print_box_top "$BLUE"
-        print_box_line "${GREEN}⚡ LOCALSEND CLI SENDER (v$VERSION)${NC}" "$BLUE" "$BOX_WIDTH" "center"
+        print_box_line "$title" "$BLUE" "$BOX_WIDTH" "center"
         print_box_sep "$BLUE"
         print_box_line "${INFO} Name : ${YELLOW}$MY_NAME${NC}" "$BLUE"
         print_box_line "${INFO} IP   : ${YELLOW}$MY_IP${NC}" "$BLUE"
@@ -395,8 +425,10 @@ send_mode() {
 
     while true; do
         clear
+        local title="${GREEN}⚡ LOCALSEND CLI SENDER (v$VERSION)${NC}"
+        [[ "$ENCRYPT_TRANSFER" == true ]] && title="$LOCK $title"
         print_box_top "$BLUE"
-        print_box_line "${GREEN}⚡ LOCALSEND CLI SENDER (v$VERSION)${NC}" "$BLUE" "$BOX_WIDTH" "center"
+        print_box_line "$title" "$BLUE" "$BOX_WIDTH" "center"
         print_box_sep "$BLUE"
         print_box_line "${INFO} Name : ${YELLOW}$MY_NAME${NC}" "$BLUE"
         print_box_line "${INFO} IP   : ${YELLOW}$MY_IP${NC}" "$BLUE"
@@ -446,7 +478,7 @@ send_mode() {
     local human_total=$(human_size "$total_size")
     local item_names=$(printf "%s," "${items[@]}" | sed 's/,$//')
     
-    echo -e "\n${TICK} ${YELLOW}Initiating transfer to ${GREEN}$target_ip${NC}..."
+    echo -e "\n${TICK} ${YELLOW}Initiating transfer to ${GREEN}$target_ip${NC}... $([[ "$ENCRYPT_TRANSFER" == true ]] && echo -e "($LOCK Secure)")"
     echo -e "${INFO} ${WHITE}Total size: ${CYAN}$human_total${NC} (${#items[@]} items)"
     if [[ "$VERIFY_CHECKSUM" == true ]]; then
         echo -e "${INFO} ${CYAN}Calculating checksum...${NC}"
@@ -460,13 +492,18 @@ send_mode() {
         if [[ $attempt -gt 1 ]]; then
             echo -e "${YELLOW}[!] Retry attempt $attempt/$MAX_RETRIES...${NC}"
         fi
+        local socat_cmd="socat -u - TCP4:$target_ip:$FILE_PORT,sndbuf=1048576,tcpnodelay"
+        if [[ "$ENCRYPT_TRANSFER" == true ]]; then
+            socat_cmd="socat -u - OPENSSL-CONNECT:$target_ip:$FILE_PORT,verify=0,sndbuf=1048576,tcpnodelay"
+        fi
+        
         if [[ "$COMPRESS_TRANSFER" == true ]]; then
             [[ $attempt -eq 1 ]] && echo -e "${INFO} ${CYAN}Compression enabled (gzip)${NC}"
-            if tar -cv -b 128 "${items[@]}" 2>/dev/null | gzip | pv -p -b -r -a -N "Transfer" | socat -u - TCP4:$target_ip:$FILE_PORT,sndbuf=1048576,tcpnodelay 2>/dev/null; then
+            if tar -cv -b 128 "${items[@]}" 2>/dev/null | gzip | pv -p -b -r -a -N "Transfer" | $socat_cmd 2>/dev/null; then
                 success=true; break
             fi
         else
-            if tar -cv -b 128 "${items[@]}" 2>/dev/null | pv -p -b -r -a -N "Transfer" | socat -u - TCP4:$target_ip:$FILE_PORT,sndbuf=1048576,tcpnodelay 2>/dev/null; then
+            if tar -cv -b 128 "${items[@]}" 2>/dev/null | pv -p -b -r -a -N "Transfer" | $socat_cmd 2>/dev/null; then
                 success=true; break
             fi
         fi
@@ -550,6 +587,7 @@ if [[ $# -eq 0 ]]; then interactive_menu; else
             -v|--version) echo "LocalSend CLI v$VERSION"; exit 0 ;;
             -p|--port) FILE_PORT="$2"; shift 2 ;;
             -d|--dir) DOWNLOAD_DIR="$2"; shift 2 ;;
+            -e|--encrypt) ENCRYPT_TRANSFER=true; generate_certs; shift ;;
             -z|--compress) COMPRESS_TRANSFER=true; shift ;;
             -c|--checksum) VERIFY_CHECKSUM=true; shift ;;
             -r|--receive) receive_mode; break ;;
