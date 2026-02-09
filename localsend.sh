@@ -3,7 +3,7 @@
 # --- Configuration ---
 FILE_PORT=${FILE_PORT:-9999}
 DISCOVERY_PORT=${DISCOVERY_PORT:-9998}
-VERSION="1.8"
+VERSION="1.9"
 VERIFY_CHECKSUM=false
 COMPRESS_TRANSFER=false
 
@@ -38,6 +38,62 @@ cleanup_and_exit() {
 
 # Unified navigation hint
 NAV_HINT="${CYAN}[b]${NC} Back | ${CYAN}[q]${NC} Quit"
+
+# --- UI Helpers ---
+BOX_WIDTH=56
+
+print_box_top() {
+    local color="${1:-$CYAN}"
+    local width="${2:-$BOX_WIDTH}"
+    local line=$(printf '━%.0s' $(seq 1 $((width - 2))))
+    echo -e "${color}┏${line}┓${NC}"
+}
+
+print_box_bottom() {
+    local color="${1:-$CYAN}"
+    local width="${2:-$BOX_WIDTH}"
+    local line=$(printf '━%.0s' $(seq 1 $((width - 2))))
+    echo -e "${color}┗${line}┛${NC}"
+}
+
+print_box_sep() {
+    local color="${1:-$CYAN}"
+    local width="${2:-$BOX_WIDTH}"
+    local line=$(printf '━%.0s' $(seq 1 $((width - 2))))
+    echo -e "${color}┣${line}┫${NC}"
+}
+
+print_box_line() {
+    local content="$1"
+    local color="${2:-$CYAN}"
+    local width="${3:-$BOX_WIDTH}"
+    local align="${4:-left}"
+    
+    # Strip ANSI to get visible length
+    local plain=$(echo -e "$content" | sed 's/\x1b\[[0-9;]*m//g')
+    local plain_len=${#plain}
+    
+    local inner_width=$((width - 4))
+    local pad_total=$((inner_width - plain_len))
+    [ $pad_total -lt 0 ] && pad_total=0
+    
+    local left_p=0
+    local right_p=0
+    
+    if [ "$align" == "center" ]; then
+        left_p=$((pad_total / 2))
+        right_p=$((pad_total - left_p))
+    else
+        left_p=0
+        right_p=$pad_total
+    fi
+    
+    echo -ne "${color}┃${NC} "
+    [ $left_p -gt 0 ] && printf "%${left_p}s" ""
+    echo -ne "$content"
+    [ $right_p -gt 0 ] && printf "%${right_p}s" ""
+    echo -e " ${color}┃${NC}"
+}
 
 # --- Help ---
 show_help() {
@@ -256,12 +312,12 @@ scan_devices() {
 receive_mode() {
     MY_IP=$(get_ip)
     clear
-    echo -e "${PURPLE}┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓${NC}"
-    echo -e "${PURPLE}┃${NC}  ${GREEN}⚡ LOCALSEND CLI RECEIVER (v$VERSION)${NC}           ${PURPLE}┃${NC}"
-    echo -e "${PURPLE}┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫${NC}"
-    printf "${PURPLE}┃${NC}  ${INFO} Name : %-41s ${PURPLE}┃${NC}\n" "${YELLOW}$MY_NAME${NC}"
-    printf "${PURPLE}┃${NC}  ${INFO} IP   : %-41s ${PURPLE}┃${NC}\n" "${YELLOW}$MY_IP${NC}"
-    echo -e "${PURPLE}┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛${NC}"
+    print_box_top "$PURPLE"
+    print_box_line "${GREEN}⚡ LOCALSEND CLI RECEIVER (v$VERSION)${NC}" "$PURPLE" "$BOX_WIDTH" "center"
+    print_box_sep "$PURPLE"
+    print_box_line "${INFO} Name : ${YELLOW}$MY_NAME${NC}" "$PURPLE"
+    print_box_line "${INFO} IP   : ${YELLOW}$MY_IP${NC}" "$PURPLE"
+    print_box_bottom "$PURPLE"
     echo -e "${YELLOW}Navigation: ${NC}${NAV_HINT} ${CYAN}| Ctrl+C${NC} Back"
     
     start_discovery_responder &
@@ -289,12 +345,12 @@ send_mode() {
     if [[ ${#items[@]} -eq 0 ]]; then
         trap "interactive_menu; return" INT
         clear
-        echo -e "${BLUE}┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓${NC}"
-        echo -e "${BLUE}┃${NC}  ${GREEN}⚡ LOCALSEND CLI SENDER (v$VERSION)${NC}             ${BLUE}┃${NC}"
-        echo -e "${BLUE}┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫${NC}"
-        printf "${BLUE}┃${NC}  ${INFO} Name : %-41s ${BLUE}┃${NC}\n" "${YELLOW}$MY_NAME${NC}"
-        printf "${BLUE}┃${NC}  ${INFO} IP   : %-41s ${BLUE}┃${NC}\n" "${YELLOW}$MY_IP${NC}"
-        echo -e "${BLUE}┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛${NC}"
+        print_box_top "$BLUE"
+        print_box_line "${GREEN}⚡ LOCALSEND CLI SENDER (v$VERSION)${NC}" "$BLUE" "$BOX_WIDTH" "center"
+        print_box_sep "$BLUE"
+        print_box_line "${INFO} Name : ${YELLOW}$MY_NAME${NC}" "$BLUE"
+        print_box_line "${INFO} IP   : ${YELLOW}$MY_IP${NC}" "$BLUE"
+        print_box_bottom "$BLUE"
         echo -e "${YELLOW}Navigation: ${NC}${NAV_HINT}"
         echo -e "\n${INFO} ${YELLOW}Drag and drop files here or type paths${NC}"
         echo -en "${ARROW} ${YELLOW}Path(s):${NC} "
@@ -313,12 +369,12 @@ send_mode() {
 
     while true; do
         clear
-        echo -e "${BLUE}┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓${NC}"
-        echo -e "${BLUE}┃${NC}  ${GREEN}⚡ LOCALSEND CLI SENDER (v$VERSION)${NC}             ${BLUE}┃${NC}"
-        echo -e "${BLUE}┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫${NC}"
-        printf "${BLUE}┃${NC}  ${INFO} Name : %-41s ${BLUE}┃${NC}\n" "${YELLOW}$MY_NAME${NC}"
-        printf "${BLUE}┃${NC}  ${INFO} IP   : %-41s ${BLUE}┃${NC}\n" "${YELLOW}$MY_IP${NC}"
-        echo -e "${BLUE}┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛${NC}"
+        print_box_top "$BLUE"
+        print_box_line "${GREEN}⚡ LOCALSEND CLI SENDER (v$VERSION)${NC}" "$BLUE" "$BOX_WIDTH" "center"
+        print_box_sep "$BLUE"
+        print_box_line "${INFO} Name : ${YELLOW}$MY_NAME${NC}" "$BLUE"
+        print_box_line "${INFO} IP   : ${YELLOW}$MY_IP${NC}" "$BLUE"
+        print_box_bottom "$BLUE"
         echo -e "${CYAN} Prepare to send:${NC} ${WHITE}${#items[@]} item(s)${NC}"
         echo -e "${CYAN} ──────────────────────────────────────────────────────${NC}"
         
@@ -403,19 +459,19 @@ send_mode() {
         echo -e "${RED}[!] Transfer failed after $MAX_RETRIES attempts${NC}"
         log_transfer "SEND" "$target_ip" "$item_names" "FAILED" "$human_total"
     fi
-    echo -en "\n${ARROW} Press Enter to return to menu..."; read -r; interactive_menu
+    echo -en "\n${ARROW} Press Enter to return to menu..."; read -r
 }
 
 install_global() {
     sudo ln -sf "$(realpath "$0")" "/usr/local/bin/localsend" && echo -e "${TICK} Installed! Use 'localsend' anywhere."
-    sleep 2; interactive_menu
+    sleep 2
 }
 
 show_history() {
     clear
-    echo -e "${CYAN}┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓${NC}"
-    echo -e "${CYAN}┃${NC}          ${GREEN}📋 TRANSFER HISTORY${NC}                        ${CYAN}┃${NC}"
-    echo -e "${CYAN}┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛${NC}"
+    print_box_top "$CYAN"
+    print_box_line "${GREEN}📋 TRANSFER HISTORY${NC}" "$CYAN" "$BOX_WIDTH" "center"
+    print_box_bottom "$CYAN"
     if [[ -f "$HISTORY_FILE" ]]; then
         echo -e "\n${WHITE}DATE/TIME            DIR     TARGET          ITEMS                  STATUS   SIZE${NC}"
         echo -e "${CYAN}─────────────────────────────────────────────────────────────────────────────────${NC}"
@@ -438,17 +494,17 @@ interactive_menu() {
     while $RUNNING; do
         MY_IP=$(get_ip)
         clear
-        echo -e "${CYAN}┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓${NC}"
-        echo -e "${CYAN}┃${NC}          ${GREEN}🚀 WELCOME TO LOCALSEND CLI v$VERSION${NC}          ${CYAN}┃${NC}"
-        echo -e "${CYAN}┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫${NC}"
-        echo -e "${CYAN}┃${NC}                                                      ${CYAN}┃${NC}"
-        echo -e "${CYAN}┃${NC}  ${WHITE}1)${NC} ${GREEN}Receive Files${NC}  (Wait for incoming)           ${CYAN}┃${NC}"
-        echo -e "${CYAN}┃${NC}  ${WHITE}2)${NC} ${BLUE}Send Files${NC}     (Scan & send to peer)         ${CYAN}┃${NC}"
-        echo -e "${CYAN}┃${NC}  ${WHITE}h)${NC} ${PURPLE}History${NC}        (View transfer history)        ${CYAN}┃${NC}"
-        echo -e "${CYAN}┃${NC}  ${WHITE}i)${NC} ${YELLOW}Install Global${NC} (Access from anywhere)        ${CYAN}┃${NC}"
-        echo -e "${CYAN}┃${NC}  ${WHITE}q)${NC} ${RED}Quit${NC}           (Exit application)            ${CYAN}┃${NC}"
-        echo -e "${CYAN}┃${NC}                                                      ${CYAN}┃${NC}"
-        echo -e "${CYAN}┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛${NC}"
+        print_box_top "$CYAN"
+        print_box_line "${GREEN}🚀 WELCOME TO LOCALSEND CLI v$VERSION${NC}" "$CYAN" "$BOX_WIDTH" "center"
+        print_box_sep "$CYAN"
+        print_box_line ""
+        print_box_line "${WHITE}1)${NC} ${GREEN}Receive Files${NC}  (Wait for incoming)"
+        print_box_line "${WHITE}2)${NC} ${BLUE}Send Files${NC}     (Scan & send to peer)"
+        print_box_line "${WHITE}h)${NC} ${PURPLE}History${NC}        (View transfer history)"
+        print_box_line "${WHITE}i)${NC} ${YELLOW}Install Global${NC} (Access from anywhere)"
+        print_box_line "${WHITE}q)${NC} ${RED}Quit${NC}           (Exit application)"
+        print_box_line ""
+        print_box_bottom "$CYAN"
         echo -en "\n${ARROW} ${WHITE}Select option:${NC} "; read -r c
         case "$c" in
             1) receive_mode ;;
