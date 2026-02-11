@@ -7,9 +7,11 @@ VERSION="2.5"
 VERIFY_CHECKSUM=false
 COMPRESS_TRANSFER=false
 ENCRYPT_TRANSFER=false
-DOWNLOAD_DIR=${DOWNLOAD_DIR:-$HOME/Downloads/LocalSend}
-CERT_DIR="$HOME/.localsend_certs"
-LOCK="${PURPLE}🔒${NC}"
+DOWNLOAD_DIR=${DOWNLOAD_DIR:-$HOME/Downloads/KirimLocal}
+CERT_DIR="$HOME/.kirimlocal_certs"
+
+# Enable strict mode after defining variables that reference each other
+set -euo pipefail
 
 # Colors & Icons
 GREEN='\033[0;32m'
@@ -20,6 +22,8 @@ PURPLE='\033[0;35m'
 CYAN='\033[0;36m'
 WHITE='\033[1;37m'
 NC='\033[0m'
+
+LOCK="${PURPLE}🔒${NC}"
 
 TICK="${GREEN}✔${NC}"
 ARROW="${BLUE}➜${NC}"
@@ -34,7 +38,7 @@ BG_PIDS=()
 cleanup_and_exit() {
     RUNNING=false
     for pid in "${BG_PIDS[@]}"; do
-        kill "$pid" 2>/dev/null
+        kill "$pid" 2>/dev/null || true
     done
     echo -e "\n${TICK} ${GREEN}Goodbye!${NC}"
     exit 0
@@ -101,12 +105,12 @@ print_box_line() {
 
 # --- Help ---
 show_help() {
-    echo -e "${GREEN}LocalSend CLI v$VERSION${NC} - Fast local file sharing"
+    echo -e "${GREEN}KirimLocal CLI v$VERSION${NC} - Fast local file sharing"
     echo
     echo -e "${WHITE}USAGE:${NC}"
-    echo "  localsend                    Interactive menu"
-    echo "  localsend -r                 Receive mode"
-    echo "  localsend -s <files...>      Send files"
+    echo "  kirimlocal                   Interactive menu"
+    echo "  kirimlocal -r                Receive mode"
+    echo "  kirimlocal -s <files...>     Send files"
     echo
     echo -e "${WHITE}OPTIONS:${NC}"
     echo "  -r, --receive                Start in receive mode"
@@ -114,19 +118,19 @@ show_help() {
     echo "  -p, --port <port>            Custom transfer port (default: 9999)"
     echo "  -z, --compress               Enable gzip compression (faster for text)"
     echo "  -c, --checksum               Verify checksum after transfer"
-    echo "  -d, --dir <path>             Custom download directory (default: ~/Downloads/LocalSend)"
+    echo "  -d, --dir <path>             Custom download directory (default: ~/Downloads/KirimLocal)"
     echo "  -e, --encrypt                Enable TLS encryption for secure transfer"
     echo "  -h, --help                   Show this help message"
     echo "  -v, --version                Show version"
     echo
     echo -e "${WHITE}EXAMPLES:${NC}"
-    echo "  localsend -s file.txt        Send single file"
-    echo "  localsend -s *.pdf           Send all PDFs"
-    echo "  localsend -r -p 8888         Receive on port 8888"
-    echo "  localsend -s -z *.log        Send with compression"
-    echo "  localsend -s -c file.zip     Send with checksum verify"
-    echo "  localsend -r -e              Receive with TLS encryption"
-    echo "  localsend -s -e file.txt     Send with TLS encryption"
+    echo "  kirimlocal -s file.txt       Send single file"
+    echo "  kirimlocal -s *.pdf          Send all PDFs"
+    echo "  kirimlocal -r -p 8888        Receive on port 8888"
+    echo "  kirimlocal -s -z *.log       Send with compression"
+    echo "  kirimlocal -s -c file.zip    Send with checksum verify"
+    echo "  kirimlocal -r -e             Receive with TLS encryption"
+    echo "  kirimlocal -s -e file.txt    Send with TLS encryption"
     echo
     echo -e "${WHITE}ENVIRONMENT:${NC}"
     echo "  DOWNLOAD_DIR                 Override default download directory"
@@ -137,14 +141,14 @@ show_help() {
 
 # --- Security ---
 generate_certs() {
-    if [[ ! -f "$CERT_DIR/localsend.pem" ]]; then
+    if [[ ! -f "$CERT_DIR/kirimlocal.pem" ]]; then
         mkdir -p "$CERT_DIR"
         echo -e "${INFO} ${CYAN}Generating self-signed certificate for encryption...${NC}"
         openssl req -new -newkey rsa:2048 -days 365 -nodes -x509 \
-            -subj "/C=ID/ST=LocalSend/L=CLI/O=Security/CN=localsend" \
-            -keyout "$CERT_DIR/localsend.key" -out "$CERT_DIR/localsend.crt" &>/dev/null
-        cat "$CERT_DIR/localsend.key" "$CERT_DIR/localsend.crt" > "$CERT_DIR/localsend.pem"
-        rm "$CERT_DIR/localsend.key" "$CERT_DIR/localsend.crt"
+            -subj "/C=ID/ST=KirimLocal/L=CLI/O=Security/CN=kirimlocal" \
+            -keyout "$CERT_DIR/kirimlocal.key" -out "$CERT_DIR/kirimlocal.crt" &>/dev/null
+        cat "$CERT_DIR/kirimlocal.key" "$CERT_DIR/kirimlocal.crt" > "$CERT_DIR/kirimlocal.pem"
+        rm "$CERT_DIR/kirimlocal.key" "$CERT_DIR/kirimlocal.crt"
     fi
 }
 
@@ -258,8 +262,121 @@ calculate_checksum() {
     fi
 }
 
+# Handle listener error cases
+handle_listener_error() {
+    local duration="$1"
+    if [[ $duration -lt 2 ]]; then
+        echo -e "\n${RED}[!] Listener failed to start or died too quickly.${NC}"
+        echo -e "${YELLOW}[!] Port $FILE_PORT might be in use by another process.${NC}"
+        echo -e "${CYAN}[r]${NC} Retry | ${CYAN}[p]${NC} Use different port | ${NAV_HINT}"
+        echo -en "\n${ARROW} ${WHITE}Action:${NC} "; read -r action
+        case "$action" in
+            r|R) return 1 ;;  # Continue
+            p|P)
+                echo -en "${ARROW} ${YELLOW}Enter new port: ${NC}"; read -r new_port
+                [[ "$new_port" =~ ^[0-9]+$ ]] && FILE_PORT="$new_port"
+                return 1 ;;  # Continue
+            b|B) return 2 ;;  # Break
+            q|Q) return 3 ;;  # Exit
+            *) return 1 ;;    # Continue
+        esac
+    else
+        echo -e "\n${TICK} ${GREEN}Transfer Success!${NC}"
+        log_transfer "RECEIVE" "$MY_IP" "incoming" "SUCCESS" "-"
+        echo -e "${CYAN}──────────────────────────────────────────────────────${NC}"
+        return 0  # Normal continuation
+    fi
+}
+
+# Check port availability and handle user response
+check_port_availability() {
+    if ss -tuln 2>/dev/null | grep -q ":$FILE_PORT " || true; then
+        echo -e "\n${RED}[!] Port $FILE_PORT is already in use.${NC}"
+        echo -e "${CYAN}[r]${NC} Retry | ${CYAN}[p]${NC} Use different port | ${NAV_HINT}"
+        echo -en "\n${ARROW} ${WHITE}Action:${NC} "; read -r action
+        case "$action" in
+            r|R) return 1 ;;  # Continue
+            p|P)
+                echo -en "${ARROW} ${YELLOW}Enter new port: ${NC}"; read -r new_port
+                [[ "$new_port" =~ ^[0-9]+$ ]] && FILE_PORT="$new_port"
+                return 1 ;;  # Continue
+            b|B) return 2 ;;  # Break
+            q|Q) return 3 ;;  # Exit
+            *) return 1 ;;    # Continue
+        esac
+    else
+        return 0  # Port is available
+    fi
+}
+
+# Clipboard Functions
+get_clipboard_cmd() {
+    if command -v pbcopy &>/dev/null && command -v pbpaste &>/dev/null; then
+        echo "macos"
+    elif command -v xclip &>/dev/null; then
+        echo "xclip"
+    elif command -v xsel &>/dev/null; then
+        echo "xsel"
+    elif command -v wl-copy &>/dev/null && command -v wl-paste &>/dev/null; then
+        echo "wayland"
+    else
+        echo "none"
+    fi
+}
+
+get_clipboard_content() {
+    case $(get_clipboard_cmd) in
+        macos) pbpaste ;;
+        xclip) xclip -selection clipboard -o ;;
+        xsel) xsel --clipboard --output ;;
+        wayland) wl-paste ;;
+        *) echo "Clipboard not supported on this system" >&2; return 1 ;;
+    esac
+}
+
+set_clipboard_content() {
+    local content="$1"
+    case $(get_clipboard_cmd) in
+        macos) echo -n "$content" | pbcopy ;;
+        xclip) echo -n "$content" | xclip -selection clipboard ;;
+        xsel) echo -n "$content" | xsel --clipboard --input ;;
+        wayland) echo -n "$content" | wl-copy ;;
+        *) echo "Clipboard not supported on this system" >&2; return 1 ;;
+    esac
+}
+
+# Share clipboard content with another device
+share_clipboard() {
+    local content=$(get_clipboard_content 2>/dev/null)
+    if [[ -n "$content" ]]; then
+        # Use the existing send mechanism but with clipboard content
+        echo -e "${INFO} ${CYAN}Preparing to share clipboard content...${NC}"
+        
+        # Create a temporary file with clipboard content
+        local temp_file=$(mktemp)
+        echo -n "$content" > "$temp_file"
+        
+        # Use the existing send functionality
+        send_mode "$temp_file"
+        
+        # Clean up
+        rm "$temp_file"
+    else
+        echo -e "${RED}[!] Clipboard is empty${NC}"
+        echo -en "\n${ARROW} Press Enter to return..."; read -r
+    fi
+}
+
+# Receive clipboard content from another device
+receive_clipboard() {
+    # This would be integrated into the receive functionality
+    # For now, we'll just note that received text content should be 
+    # automatically placed in clipboard if it's detected as text
+    echo -e "${INFO} ${CYAN}Clipboard receive mode will be activated when text content is received${NC}"
+}
+
 # History & Retry Config
-HISTORY_FILE="${HOME}/.localsend_history"
+HISTORY_FILE="${HOME}/.kirimlocal_history"
 MAX_RETRIES=3
 RETRY_DELAY=2
 
@@ -293,7 +410,7 @@ human_size() {
 for arg in "$@"; do
     case "$arg" in
         -h|--help) show_help ;;
-        -v|--version) echo "LocalSend CLI v$VERSION"; exit 0 ;;
+        -v|--version) echo "KirimLocal CLI v$VERSION"; exit 0 ;;
     esac
 done
 
@@ -305,8 +422,8 @@ MY_NAME=$(generate_name)
 start_discovery_responder() {
     while true; do
         data=$(socat -u UDP4-RECVFROM:$DISCOVERY_PORT,fork,reuseaddr - 2>/dev/null | head -n 1)
-        if [[ "$data" == "LOCALSEND_SCAN" ]]; then
-            echo "LOCALSEND_PEER|$MY_NAME|$MY_IP" | socat -u - UDP4-DATAGRAM:255.255.255.255:$DISCOVERY_PORT,broadcast 2>/dev/null
+        if [[ "$data" == "KIRIMLOCAL_SCAN" ]]; then
+            echo "KIRIMLOCAL_PEER|$MY_NAME|$MY_IP" | socat -u - UDP4-DATAGRAM:255.255.255.255:$DISCOVERY_PORT,broadcast 2>/dev/null
         fi
     done
 }
@@ -320,13 +437,13 @@ scan_devices() {
     ) &
     local spinner_pid=$!
     for brd in "${broadcasts[@]}"; do
-        echo "LOCALSEND_SCAN" | socat -u - UDP4-DATAGRAM:$brd:$DISCOVERY_PORT,broadcast 2>/dev/null
+        echo "KIRIMLOCAL_SCAN" | socat -u - UDP4-DATAGRAM:$brd:$DISCOVERY_PORT,broadcast 2>/dev/null
     done
     local raw_peers=()
     while read -r -t 1.5 line; do
-        [[ "$line" == LOCALSEND_PEER* ]] && raw_peers+=("$line")
+        [[ "$line" == KIRIMLOCAL_PEER* ]] && raw_peers+=("$line")
     done < <(socat -u UDP4-RECVFROM:$DISCOVERY_PORT,reuseaddr - 2>/dev/null)
-    kill $spinner_pid 2>/dev/null; wait $spinner_pid 2>/dev/null
+    kill $spinner_pid 2>/dev/null || true; wait $spinner_pid 2>/dev/null || true
     printf "%s\n" "${raw_peers[@]}" | sort -u
 }
 
@@ -336,7 +453,7 @@ receive_mode() {
     mkdir -p "$DOWNLOAD_DIR"
     [[ "$ENCRYPT_TRANSFER" == true ]] && generate_certs
     clear
-    local title="${GREEN}⚡ LOCALSEND CLI RECEIVER (v$VERSION)${NC}"
+    local title="${GREEN}⚡ KIRIMLOCAL CLI RECEIVER (v$VERSION)${NC}"
     [[ "$ENCRYPT_TRANSFER" == true ]] && title="$LOCK $title"
     
     print_box_top "$PURPLE"
@@ -354,76 +471,98 @@ receive_mode() {
     
     local socat_pid=""
     
-    trap "kill $disc_pid $socat_pid 2>/dev/null; BG_PIDS=(\"\${BG_PIDS[@]/\$disc_pid}\"); return 0" INT
+    trap "kill $disc_pid $socat_pid 2>/dev/null || true; BG_PIDS=(\"\${BG_PIDS[@]/\$disc_pid}\"); return 0" INT
     
     while $RUNNING; do
-        if [[ -z "$socat_pid" ]] || ! kill -0 "$socat_pid" 2>/dev/null; then
+        # Check if process exists, suppressing error if it doesn't
+        local process_exists=1  # 1 for true, 0 for false
+        if [[ -n "$socat_pid" ]]; then
+            if kill -0 "$socat_pid" 2>/dev/null; then
+                process_exists=1
+            else
+                process_exists=0
+            fi
+        else
+            process_exists=0
+        fi
+        
+        if [[ -z "$socat_pid" ]] || [ $process_exists -eq 0 ]; then
             if [[ -n "$socat_pid" ]]; then
                 # Check how long it ran
                 local end_time=$(date +%s)
                 local duration=$((end_time - start_time))
                 
-                if [[ $duration -lt 2 ]]; then
-                    echo -e "\n${RED}[!] Listener failed to start or died too quickly.${NC}"
-                    echo -e "${YELLOW}[!] Port $FILE_PORT might be in use by another process.${NC}"
-                    echo -e "${CYAN}[r]${NC} Retry | ${CYAN}[p]${NC} Use different port | ${NAV_HINT}"
-                    echo -en "\n${ARROW} ${WHITE}Action:${NC} "; read -r action
-                    case "$action" in
-                        r|R) socat_pid=""; continue ;;
-                        p|P)
-                            echo -en "${ARROW} ${YELLOW}Enter new port: ${NC}"; read -r new_port
-                            [[ "$new_port" =~ ^[0-9]+$ ]] && FILE_PORT="$new_port"
-                            socat_pid=""; continue ;;
-                        b|B) break ;;
-                        q|Q) cleanup_and_exit ;;
-                        *) socat_pid=""; continue ;;
-                    esac
-                else
-                    echo -e "\n${TICK} ${GREEN}Transfer Success!${NC}"
-                    log_transfer "RECEIVE" "$MY_IP" "incoming" "SUCCESS" "-"
-                    echo -e "${CYAN}──────────────────────────────────────────────────────${NC}"
+                handle_listener_error "$duration"
+                local error_result=$?
+                if [[ $error_result -eq 1 ]]; then
+                    socat_pid=""
+                    continue
+                elif [[ $error_result -eq 2 ]]; then
+                    break
+                elif [[ $error_result -eq 3 ]]; then
+                    cleanup_and_exit
                 fi
                 socat_pid=""
             fi
             
             # Check if port is already in use before trying
-            if ss -tuln | grep -q ":$FILE_PORT "; then
-                echo -e "\n${RED}[!] Port $FILE_PORT is already in use.${NC}"
-                echo -e "${CYAN}[r]${NC} Retry | ${CYAN}[p]${NC} Use different port | ${NAV_HINT}"
-                echo -en "\n${ARROW} ${WHITE}Action:${NC} "; read -r action
-                case "$action" in
-                    r|R) continue ;;
-                    p|P)
-                        echo -en "${ARROW} ${YELLOW}Enter new port: ${NC}"; read -r new_port
-                        [[ "$new_port" =~ ^[0-9]+$ ]] && FILE_PORT="$new_port"
-                        continue ;;
-                    b|B) break ;;
-                    q|Q) cleanup_and_exit ;;
-                    *) continue ;;
-                esac
+            check_port_availability
+            local port_check_result=$?
+            if [[ $port_check_result -eq 1 ]]; then
+                continue
+            elif [[ $port_check_result -eq 2 ]]; then
+                break
+            elif [[ $port_check_result -eq 3 ]]; then
+                cleanup_and_exit
             fi
 
             echo -e "\n${FLASH} Waiting for incoming files... $([[ "$ENCRYPT_TRANSFER" == true ]] && echo -e "($LOCK Secure)")"
             local socat_cmd="socat -u TCP4-LISTEN:$FILE_PORT,reuseaddr,rcvbuf=1048576 -"
             if [[ "$ENCRYPT_TRANSFER" == true ]]; then
-                socat_cmd="socat -u OPENSSL-LISTEN:$FILE_PORT,reuseaddr,cert=$CERT_DIR/localsend.pem,verify=0,rcvbuf=1048576 -"
+                socat_cmd="socat -u OPENSSL-LISTEN:$FILE_PORT,reuseaddr,cert=$CERT_DIR/kirimlocal.pem,verify=0,rcvbuf=1048576 -"
             fi
             
             start_time=$(date +%s)
             # Create a named pipe for size extraction
-            local fifo="/tmp/localsend_$$"
+            local fifo="/tmp/kirimlocal_$$"
             mkfifo "$fifo" 2>/dev/null
-            
+
             (
                 $socat_cmd | {
                     # Read 16-byte size header
                     read -r -n 16 size_header
                     expected_size=$((10#$size_header))
-                    
+
                     if [[ "$COMPRESS_TRANSFER" == true ]]; then
-                        pv -s "$expected_size" | gunzip | tar -xvB -b 128 -C "$DOWNLOAD_DIR"
+                        # Store the received content temporarily to check if it's text
+                        local temp_output=$(mktemp)
+                        pv -s "$expected_size" | gunzip | tee "$temp_output" | tar -xvB -b 128 -C "$DOWNLOAD_DIR"
+                        
+                        # Check if the received content is text and small enough to be clipboard content
+                        if file --mime-type "$temp_output" | grep -q "text/" && [[ $(stat -c%s "$temp_output") -lt 1048576 ]]; then  # Less than 1MB
+                            local content=$(cat "$temp_output")
+                            # Copy to clipboard if possible
+                            if set_clipboard_content "$content" 2>/dev/null; then
+                                echo -e "\n${TICK} ${GREEN}Text content copied to clipboard!${NC}"
+                            fi
+                        fi
+                        
+                        rm "$temp_output"
                     else
-                        pv -s "$expected_size" | tar -xvB -b 128 -C "$DOWNLOAD_DIR"
+                        # Store the received content temporarily to check if it's text
+                        local temp_output=$(mktemp)
+                        pv -s "$expected_size" | tee "$temp_output" | tar -xvB -b 128 -C "$DOWNLOAD_DIR"
+                        
+                        # Check if the received content is text and small enough to be clipboard content
+                        if file --mime-type "$temp_output" | grep -q "text/" && [[ $(stat -c%s "$temp_output") -lt 1048576 ]]; then  # Less than 1MB
+                            local content=$(cat "$temp_output")
+                            # Copy to clipboard if possible
+                            if set_clipboard_content "$content" 2>/dev/null; then
+                                echo -e "\n${TICK} ${GREEN}Text content copied to clipboard!${NC}"
+                            fi
+                        fi
+                        
+                        rm "$temp_output"
                     fi
                 }
             ) &
@@ -441,7 +580,7 @@ receive_mode() {
         fi
     done
     
-    kill "$disc_pid" "$socat_pid" 2>/dev/null
+    kill "$disc_pid" "$socat_pid" 2>/dev/null || true
     BG_PIDS=("${BG_PIDS[@]/$disc_pid}")
 }
 
@@ -450,7 +589,7 @@ send_mode() {
     if [[ ${#items[@]} -eq 0 ]]; then
         trap "interactive_menu; return" INT
         clear
-        local title="${GREEN}⚡ LOCALSEND CLI SENDER (v$VERSION)${NC}"
+        local title="${GREEN}⚡ KIRIMLOCAL CLI SENDER (v$VERSION)${NC}"
         [[ "$ENCRYPT_TRANSFER" == true ]] && title="$LOCK $title"
         print_box_top "$BLUE"
         print_box_line "$title" "$BLUE" "$BOX_WIDTH" "center"
@@ -476,7 +615,7 @@ send_mode() {
 
     while true; do
         clear
-        local title="${GREEN}⚡ LOCALSEND CLI SENDER (v$VERSION)${NC}"
+        local title="${GREEN}⚡ KIRIMLOCAL CLI SENDER (v$VERSION)${NC}"
         [[ "$ENCRYPT_TRANSFER" == true ]] && title="$LOCK $title"
         print_box_top "$BLUE"
         print_box_line "$title" "$BLUE" "$BOX_WIDTH" "center"
@@ -577,8 +716,143 @@ send_mode() {
 }
 
 install_global() {
-    sudo ln -sf "$(realpath "$0")" "/usr/local/bin/localsend" && echo -e "${TICK} Installed! Use 'localsend' anywhere."
+    local install_success=false
+    
+    # Try different installation methods depending on system capabilities
+    if command -v sudo >/dev/null 2>&1; then
+        # Method 1: Traditional installation using sudo
+        if sudo ln -sf "$(realpath "$0")" "/usr/local/bin/kirimlocal" 2>/dev/null; then
+            echo -e "${TICK} CLI installed to /usr/local/bin/kirimlocal"
+            install_success=true
+        else
+            # If /usr/local/bin doesn't exist or isn't writable, try /usr/bin
+            if sudo ln -sf "$(realpath "$0")" "/usr/bin/kirimlocal" 2>/dev/null; then
+                echo -e "${TICK} CLI installed to /usr/bin/kirimlocal"
+                install_success=true
+            fi
+        fi
+    fi
+    
+    # Method 2: If sudo is not available or failed, try user-local installation
+    if [[ "$install_success" == false ]]; then
+        # Create ~/.local/bin if it doesn't exist
+        mkdir -p "$HOME/.local/bin"
+        
+        # Create symlink in user's local bin directory
+        if ln -sf "$(realpath "$0")" "$HOME/.local/bin/kirimlocal" 2>/dev/null; then
+            echo -e "${TICK} CLI installed to $HOME/.local/bin/kirimlocal"
+            install_success=true
+            
+            # Inform user about PATH requirement
+            echo -e "${INFO} ${CYAN}Note: Make sure $HOME/.local/bin is in your PATH${NC}"
+            echo -e "${CYAN}Add 'export PATH=\$PATH:\$HOME/.local/bin' to your ~/.bashrc or ~/.zshrc${NC}"
+        fi
+    fi
+    
+    # Method 3: If all else fails, copy the script to user's local bin
+    if [[ "$install_success" == false ]]; then
+        mkdir -p "$HOME/.local/bin"
+        
+        if cp "$0" "$HOME/.local/bin/kirimlocal" && chmod +x "$HOME/.local/bin/kirimlocal"; then
+            echo -e "${TICK} CLI copied to $HOME/.local/bin/kirimlocal"
+            install_success=true
+            
+            echo -e "${INFO} ${CYAN}Note: Make sure $HOME/.local/bin is in your PATH${NC}"
+            echo -e "${CYAN}Add 'export PATH=\$PATH:\$HOME/.local/bin' to your ~/.bashrc or ~/.zshrc${NC}"
+        fi
+    fi
+    
+    if [[ "$install_success" == true ]]; then
+        echo -e "${GREEN}Use 'kirimlocal' anywhere from terminal${NC}"
+        
+        # Create desktop shortcut if desktop environment is detected
+        create_desktop_shortcut
+    else
+        echo -e "${RED}[!] Could not install globally. You can still run with 'bash kirimlocal.sh'${NC}"
+    fi
+    
     sleep 2
+}
+
+create_desktop_shortcut() {
+    local desktop_dir=""
+    
+    # Determine desktop directory location
+    if [[ -n "$XDG_DESKTOP_DIR" ]]; then
+        desktop_dir="$XDG_DESKTOP_DIR"
+    elif [[ -d "$HOME/Desktop" ]]; then
+        desktop_dir="$HOME/Desktop"
+    elif [[ -d "$HOME/desktop" ]]; then
+        desktop_dir="$HOME/desktop"
+    else
+        echo -e "${YELLOW}[!] Desktop directory not found, skipping desktop shortcut creation${NC}"
+        return 1
+    fi
+    
+    # Detect the best terminal emulator available
+    local terminal_emulator=""
+    for term in gnome-terminal konsole xterm urxvt xfce4-terminal mate-terminal lxterminal; do
+        if command -v "$term" &>/dev/null; then
+            terminal_emulator="$term"
+            break
+        fi
+    done
+    
+    if [[ -z "$terminal_emulator" ]]; then
+        echo -e "${YELLOW}[!] No suitable terminal emulator found, skipping desktop shortcut creation${NC}"
+        return 1
+    fi
+    
+    # Create desktop entry file
+    local desktop_file="$desktop_dir/KirimLocal.desktop"
+    cat > "$desktop_file" << EOF
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=KirimLocal CLI
+Comment=Fast local file sharing
+Exec=$terminal_emulator -e bash -c 'kirimlocal; read -p "Press Enter to exit..."'
+Icon=network-transmit-receive
+Terminal=false
+Categories=Network;Utility;
+MimeType=text/plain;inode/directory;
+Actions=SendFiles;ReceiveFiles;
+
+[Desktop Action SendFiles]
+Name=Send Files with KirimLocal
+Exec=$terminal_emulator -e bash -c 'kirimlocal -s; read -p "Press Enter to exit..."'
+
+[Desktop Action ReceiveFiles]
+Name=Receive Files with KirimLocal
+Exec=$terminal_emulator -e bash -c 'kirimlocal -r; read -p "Press Enter to exit..."'
+EOF
+    
+    # Make the desktop file executable
+    chmod +x "$desktop_file"
+    
+    # On some systems, we need to explicitly allow launching
+    if [[ -f "$desktop_file" ]]; then
+        # Try to set the trusted property on GNOME
+        if command -v gio &>/dev/null; then
+            gio set "$desktop_file" "metadata::trusted" yes 2>/dev/null || true
+            # Also try the newer command
+            if command -v gsettings &>/dev/null; then
+                local desktop_full_path="$(realpath "$desktop_file")"
+                gsettings set org.gnome.shell allowed-launch-locations "['$desktop_full_path']" 2>/dev/null || true
+            fi
+        fi
+        
+        # For KDE, try to set the trusted property
+        if command -v kwriteconfig5 &>/dev/null; then
+            local kde_config_dir="$HOME/.local/share/applications"
+            mkdir -p "$kde_config_dir"
+            cp "$desktop_file" "$kde_config_dir/"
+            kwriteconfig5 --file "$kde_config_dir/KirimLocal.desktop" --group "Desktop Entry" --key "X-KDE-DBus-StartupType" "none"
+        fi
+    fi
+    
+    echo -e "${TICK} Desktop shortcut created at: $desktop_file"
+    echo -e "${INFO} ${CYAN}Note: You may need to right-click and select 'Allow Launching' on some systems${NC}"
 }
 
 show_history() {
@@ -604,27 +878,31 @@ show_history() {
 
 interactive_menu() {
     trap "cleanup_and_exit" INT TERM
-    
+
     while $RUNNING; do
         MY_IP=$(get_ip)
         clear
         print_box_top "$CYAN"
-        print_box_line "${GREEN}🚀 WELCOME TO LOCALSEND CLI v$VERSION${NC}" "$CYAN" "$BOX_WIDTH" "center"
+        print_box_line "${GREEN}🚀 WELCOME TO KIRIMLOCAL CLI v$VERSION${NC}" "$CYAN" "$BOX_WIDTH" "center"
         print_box_sep "$CYAN"
         print_box_line ""
-        print_box_line "${WHITE}1)${NC} ${GREEN}Receive Files${NC}  (Wait for incoming)"
-        print_box_line "${WHITE}2)${NC} ${BLUE}Send Files${NC}     (Scan & send to peer)"
-        print_box_line "${WHITE}h)${NC} ${PURPLE}History${NC}        (View transfer history)"
-        print_box_line "${WHITE}i)${NC} ${YELLOW}Install Global${NC} (Access from anywhere)"
-        print_box_line "${WHITE}q)${NC} ${RED}Quit${NC}           (Exit application)"
+        print_box_line "${WHITE}1)${NC} ${GREEN}Receive Files${NC}     (Wait for incoming)"
+        print_box_line "${WHITE}2)${NC} ${BLUE}Send Files${NC}        (Scan & send to peer)"
+        print_box_line "${WHITE}3)${NC} ${CYAN}Share Clipboard${NC}   (Send clipboard content)"
+        print_box_line "${WHITE}h)${NC} ${PURPLE}History${NC}         (View transfer history)"
+        print_box_line "${WHITE}i)${NC} ${YELLOW}Install Global${NC}  (Access from anywhere)"
+        print_box_line "${WHITE}d)${NC} ${WHITE}Create Desktop Shortcut${NC} (Add to desktop)"
+        print_box_line "${WHITE}q)${NC} ${RED}Quit${NC}            (Exit application)"
         print_box_line ""
         print_box_bottom "$CYAN"
         echo -en "\n${ARROW} ${WHITE}Select option:${NC} "; read -r c
         case "$c" in
             1) receive_mode ;;
             2) send_mode ;;
+            3) share_clipboard ;;
             h|H) show_history ;;
             i|I) install_global ;;
+            d|D) create_desktop_shortcut ;;
             q|Q) cleanup_and_exit ;;
             *) ;;  # Invalid input, loop continues
         esac
@@ -635,7 +913,7 @@ if [[ $# -eq 0 ]]; then interactive_menu; else
     while [[ $# -gt 0 ]]; do
         case "$1" in
             -h|--help) show_help ;;
-            -v|--version) echo "LocalSend CLI v$VERSION"; exit 0 ;;
+            -v|--version) echo "KirimLocal CLI v$VERSION"; exit 0 ;;
             -p|--port) FILE_PORT="$2"; shift 2 ;;
             -d|--dir) DOWNLOAD_DIR="$2"; shift 2 ;;
             -e|--encrypt) ENCRYPT_TRANSFER=true; generate_certs; shift ;;

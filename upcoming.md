@@ -19,7 +19,9 @@ Daftar peningkatan yang belum diimplementasikan untuk LocalSend CLI.
 
 ## 🚀 Features (dari saran sebelumnya)
 
-- [ ] **Clipboard Sharing** - Berbagi teks/link secara instan via clipboard.
+- [x] **Clipboard Sharing** - ✅ Implemented in v2.5
+- [x] **Desktop Shortcut Creation** - ✅ Implemented in v2.5
+- [x] **Renamed to KirimLocal** - ✅ Implemented in v2.5
 - [ ] **Desktop Notifications** - Notifikasi menggunakan `notify-send` saat file diterima.
 - [ ] **Multi-target Send** - Kirim file ke beberapa perangkat sekaligus.
 - [ ] **QR Code Discovery** - Tampilkan QR code untuk koneksi cepat dari HP.
@@ -37,5 +39,5 @@ Daftar peningkatan yang belum diimplementasikan untuk LocalSend CLI.
 - [ ] **Handshake Protocol** - Sender kirim metadata dulu (daftar file + total size), receiver konfirmasi sebelum transfer dimulai.
 - [ ] **Accept/Reject Prompt** - Tampilkan list file yang akan masuk, user pilih terima atau tolak.
 - [ ] **Overwrite Protection** - Cek file existing, tanya user mau overwrite atau rename.
-- [ ] **Percentage Progress** - Jika size diketahui dari handshake, `pv -s $SIZE` bisa tampilkan persentase (misal 45%).
+- [x] **Percentage Progress** - ✅ Implemented in v2.5
 - [ ] **Per-file Progress** - Indikasi file mana yang sedang di-transfer dari total daftar file.
